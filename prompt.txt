@@ -1,0 +1,140 @@
+Hello, I'm creating a plugin for wordpress, which is installed and active in my client wordpress instance: staging and production. If it is in production, it doesn't work. If active on staging, it allows the admin user to deactivate plugins installed in wordpress. To deactivate plugins, a list with checkboxes and plugin names are shown. When the admin presses Deactivate button, the list of deactivated plugins is saved in its own table 'disabled_plugins_GO', where each entry has the plugin name and the date of deactivation. In the plugin settings, the list of currently deactivated plugins comes from 'disabled_plugins_GO'. The plugin keeps plugins deactivated as long as they are selected by the checkbox in the config panel. 
+Now ask me questions so you can build the code separated in different files:  disable-plugin.php as the entry file, activation.php for things like this:
+- activation.php // Create a Custom Database Table on Plugin Activation
+function create_plugin_deactivator_table() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'deactivated_plugins';
+    $charset_collate = $wpdb->get_charset_collate();
+
+    $sql = "CREATE TABLE $table_name (
+id mediumint(9) NOT NULL AUTO_INCREMENT,
+plugin_name text NOT NULL,
+deactivated_at datetime DEFAULT '0000-00-00 00:00:00' NOT NULL,
+PRIMARY KEY (id)
+) $charset_collate;";
+
+    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+    dbDelta($sql);
+}
+
+register_activation_hook(__FILE__, 'create_plugin_deactivator_table');
+- admin-panel.php: <?php
+
+
+
+// Handle form submission for plugin deactivation
+function handle_plugin_deactivation() {
+    if (isset($_POST['plugin_to_reactivate']) && current_user_can('activate_plugins')) {
+        check_admin_referer('deactivate-plugins-action');
+        $plugin_to_reactivate = $_POST['plugin_to_reactivate'];
+        activate_plugin($plugin_to_reactivate);
+
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'deactivated_plugins';
+        $wpdb->delete($table_name, array('plugin_name' => $plugin_to_reactivate), array('%s'));
+    }
+}
+
+// Settings page function
+function plugin_deactivator_settings_page() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'deactivated_plugins';
+    $deactivated_plugins = $wpdb->get_results("SELECT plugin_name FROM $table_name", ARRAY_A);
+
+    $active_plugins = get_option('active_plugins');
+?>
+    <style>
+        .unactive_plugin {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+    </style>
+    <div class="wrap">
+        <h1>Plugin Deactivator</h1>
+        <h2>Your environment is <?php echo (!is_staging_or_local_environment()) ? 'prod' : 'stage'; ?></h2>
+
+        <h2>This plugin is currently deactivating the following plugin/s:</h2>
+        <?php if (!empty($deactivated_plugins)) : ?>
+            <ul>
+                <?php foreach ($deactivated_plugins as $plugin) : ?>
+                    <li class="unactive_plugin">
+                        <?php echo esc_html($plugin['plugin_name']); ?>
+                        <form method="post" action="">
+                            <input type="hidden" name="plugin_to_reactivate" value="<?php echo esc_attr($plugin['plugin_name']); ?>">
+                            <?php submit_button('Reactivate', 'secondary', 'reactivate_plugin', false); ?>
+                        </form>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+
+        <?php echo (!is_staging_or_local_environment()) ? "Can't edit plugins list" : list_of_plugins($active_plugins); ?>
+    </div>
+<?php
+}
+-deactivation.php : <?php
+// Uninstall Hook for Cleaning Up the Custom Table
+function plugin_deactivator_uninstall() {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'deactivated_plugins';
+    $sql = "DROP TABLE IF EXISTS $table_name;";
+    $wpdb->query($sql);
+}
+
+register_uninstall_hook(__FILE__, 'plugin_deactivator_uninstall');
+- utils.php : <?php
+
+// Function to check if the environment is staging or local
+function is_staging_or_local_environment() {
+    $url = $_SERVER['HTTP_HOST'];
+    return preg_match('/(staging|stage|local)/i', $url);
+}
+
+// Function to deactivate selected plugins
+function deactivate_selected_plugins($plugins_to_deactivate) {
+    if (!current_user_can('activate_plugins')) {
+        error_log('User does not have permission to deactivate plugins.');
+        return;
+    }
+
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'deactivated_plugins';
+
+    foreach ($plugins_to_deactivate as $plugin) {
+        if (is_plugin_active($plugin)) {
+            $result = deactivate_plugins($plugin);
+            if (is_wp_error($result)) {
+                error_log('Failed to deactivate plugin: ' . $plugin);
+            } else {
+                error_log('Plugin deactivated successfully: ' . $plugin);
+                $wpdb->insert(
+                    $table_name,
+                    array('plugin_name' => $plugin, 'deactivated_at' => current_time('mysql')),
+                    array('%s', '%s')
+                );
+            }
+        } else {
+            error_log('Plugin already inactive: ' . $plugin);
+        }
+    }
+}
+
+// Function to display a list of plugins with checkboxes
+function list_of_plugins($active_plugins) {
+    $html = '<h2>This is the list of active plugins:</h2>';
+    $html .= '<form method="post" action="">';
+    $html .= wp_nonce_field('deactivate-plugins-action', null, true, false);
+
+    foreach ($active_plugins as $plugin) {
+        $html .= '<input type="checkbox" name="plugins_to_deactivate[]" value="' . esc_attr($plugin) . '">';
+        $html .= esc_html($plugin) . '<br>';
+    }
+
+    $html .= get_submit_button('Deactivate Selected Plugins');
+    $html .= '</form>';
+
+    return $html;
+}
+
+Change names if necessary. The plugin official name is "Plugin deactivator GO Agency"
